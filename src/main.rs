@@ -1,17 +1,20 @@
-use nom::branch::alt;
-use nom::multi::many0;
+use nom::branch::{alt, permutation};
+use nom::bytes::complete::{take_until, take_while};
+use nom::character::complete::{alpha1, digit1, space0};
+use nom::character::is_alphabetic;
+use nom::multi::{many0, separated_list0};
+use nom::sequence::terminated;
 use nom::{
     bytes::complete::{tag, tag_no_case},
     character::complete::{alphanumeric1, space1},
-    multi::separated_list1,
     sequence::delimited,
     IResult,
 };
-fn parse_separated_list(input: &str) -> IResult<&str, Vec<&str>> {
-    separated_list1(tag(","), alphanumeric1)(input)
+fn parse_separated_list(input: &str) -> IResult<&str, Vec<Expr>> {
+    separated_list0(tag(","), parse_ident_or_value)(input)
 }
 
-fn parse_separated_list_in_parentheses(input: &str) -> IResult<&str, Vec<&str>> {
+fn parse_separated_list_in_parentheses(input: &str) -> IResult<&str, Vec<Expr>> {
     delimited(tag("("), parse_separated_list, tag(")"))(input)
 }
 fn parse_insert(input: &str) -> IResult<&str, Query> {
@@ -31,8 +34,8 @@ fn parse_insert(input: &str) -> IResult<&str, Query> {
         Query {
             body: Statement::Insert {
                 table: table.to_string(),
-                columns: columns.iter().map(|s| s.to_string()).collect(),
-                values: values.iter().map(|s| s.to_string()).collect(),
+                columns: columns,
+                values: values,
             },
         },
     ))
@@ -52,8 +55,8 @@ fn parse_select(input: &str) -> IResult<&str, Query> {
         Query {
             body: Statement::Select {
                 table: table.to_string(),
-                columns: columns.iter().map(|s| s.to_string()).collect(),
-                exprs: exprs,
+                columns,
+                exprs,
             },
         },
     ))
@@ -113,7 +116,8 @@ fn parse_binary_op_is_and(input: &str) -> IResult<&str, BinaryOp> {
 }
 
 fn parse_ident_or_value(input: &str) -> IResult<&str, Expr> {
-    alt((parse_ident, parse_value))(input)
+    let (input, _ ) = space0(input)?;
+    alt((parse_function, parse_ident, parse_value))(input)
 }
 
 fn parse_ident(input: &str) -> IResult<&str, Expr> {
@@ -123,6 +127,17 @@ fn parse_ident(input: &str) -> IResult<&str, Expr> {
         Expr::Identifier(Identifier {
             value: val.to_string(),
         }),
+    ))
+}
+
+fn parse_function(input: &str) -> IResult<&str, Expr> {
+    let (input, (function, args)) = permutation((alphanumeric1, parse_separated_list_in_parentheses))(input)?;
+    Ok((
+        input,
+        Expr::Function {
+            function: function.to_string(),
+            args,
+        },
     ))
 }
 
@@ -181,32 +196,23 @@ fn parse_group_by_expr(input: &str) -> IResult<&str, Option<Expr>> {
     let (input, _) = tag_no_case("group by")(input)?;
     let (input, _) = space1(input)?;
     let (input, group_by) = parse_separated_list(input)?;
-    Ok((
-        input,
-        Some(Expr::GroupBy {
-            columns: group_by.iter().map(|s| s.to_string()).collect(),
-        }),
-    ))
+    Ok((input, Some(Expr::GroupBy { columns: group_by })))
 }
 
 fn parse_exprs(input: &str) -> IResult<&str, Vec<Option<Expr>>> {
     many0(alt((parse_filter_expr, parse_group_by_expr)))(input)
 }
 
-fn parse_end(input: &str) -> IResult<&str, &str> {
-    tag_no_case(";")(input)
-}
-
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     Insert {
         table: String,
-        columns: Vec<String>,
-        values: Vec<String>,
+        columns: Vec<Expr>,
+        values: Vec<Expr>,
     },
     Select {
         table: String,
-        columns: Vec<String>,
+        columns: Vec<Expr>,
         exprs: Vec<Option<Expr>>,
     },
 }
@@ -235,13 +241,17 @@ pub enum Expr {
     /// Identifier e.g. table name or column name
     Identifier(Identifier),
     Value(String),
+    Function {
+        function: String,
+        args: Vec<Expr>,
+    },
     BinaryOp {
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
     },
     GroupBy {
-        columns: Vec<String>,
+        columns: Vec<Expr>,
     },
     Subquery(Box<Query>),
 }
@@ -254,8 +264,10 @@ pub struct Query {
 // (col 1 > 1 and col2 < 2) or (col 1 < 1 and col2 > 2)
 // rem:  and co2 > 400  and co3 < 500, expr: {col1, >, 100}
 fn main() {
-    let (r, o) =
-        parse_select("select id,name,title from table filter id > 15 and name = 'sex';").unwrap();
+    let (r, o) = parse_select(
+        "select '15',function1(name),id,name,title from table filter id > 15 and name = 'sex' group by title",
+    )
+    .unwrap();
     println!("{:?}", r);
     println!("{:?}", o);
 }
